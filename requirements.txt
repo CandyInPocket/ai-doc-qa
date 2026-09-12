@@ -1,0 +1,8 @@
+
+"'文本
+Streamlight>=1.32
+OpenAI>=1.30
+chromadb>=0.4
+pypdf>=4.0
+python-dotenv>=1.0
+```
