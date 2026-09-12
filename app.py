@@ -4,11 +4,11 @@ import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 import chromadb
+from chromadb.utils import embedding_functions
 from pypdf import PdfReader
 
 st.set_page_config(page_title="AI 文档问答助手", page_icon="📚", layout="wide")
 load_dotenv()
-
 
 def get_config(key, default=None):
     if os.getenv(key):
@@ -18,11 +18,9 @@ def get_config(key, default=None):
     except Exception:
         return default
 
-
 API_KEY = get_config("OPENAI_API_KEY")
 BASE_URL = get_config("OPENAI_BASE_URL")
-CHAT_MODEL = get_config("CHAT_MODEL", "gpt-4o-mini")
-EMBED_MODEL = get_config("EMBED_MODEL", "text-embedding-3-small")
+CHAT_MODEL = get_config("CHAT_MODEL", "deepseek-chat")
 
 if not API_KEY:
     st.error("缺少 OPENAI_API_KEY。请在 .env 或 Streamlit Secrets 中设置。")
@@ -30,22 +28,12 @@ if not API_KEY:
 
 client = OpenAI(api_key=API_KEY, base_url=BASE_URL or None)
 
-
 @st.cache_resource
 def get_chroma_client():
-    # 内存版，重启后丢失。生产可改 PersistentClient(path="./chroma_db")
-    return chromadb.Client()
-
-
-def embed_texts(texts, batch_size=64):
-    vectors = []
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i:i + batch_size]
-        resp = client.embeddings.create(model=EMBED_MODEL, input=batch)
-        data = sorted(resp.data, key=lambda x: x.index)
-        vectors.extend([item.embedding for item in data])
-    return vectors
-
+    # 使用本地轻量向量化模型，不需要任何外部 API
+    default_ef = embedding_functions.DefaultEmbeddingFunction()
+    chroma_client = chromadb.Client()
+    return chroma_client, default_ef
 
 def read_uploaded_file(file):
     if file.name.lower().endswith(".pdf"):
@@ -53,12 +41,10 @@ def read_uploaded_file(file):
         return "\n".join(page.extract_text() or "" for page in reader.pages)
     return file.read().decode("utf-8", errors="ignore")
 
-
 def chunk_text(text, chunk_size=800, overlap=150):
     text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
     if not text:
         return []
-
     chunks = []
     start = 0
     while start < len(text):
@@ -67,69 +53,52 @@ def chunk_text(text, chunk_size=800, overlap=150):
         if end == len(text):
             break
         start = end - overlap
-
     return [c.strip() for c in chunks if c.strip()]
 
-
 def build_collection(files):
-    chroma_client = get_chroma_client()
-
+    chroma_client, ef = get_chroma_client()
     try:
         chroma_client.delete_collection("docs")
     except Exception:
         pass
-
-    collection = chroma_client.create_collection(name="docs")
-
+    collection = chroma_client.create_collection(name="docs", embedding_function=ef)
+    
     ids, docs, metas = [], [], []
-
     for file in files:
         text = read_uploaded_file(file)
         chunks = chunk_text(text)
-
         for i, chunk in enumerate(chunks):
             uid = hashlib.md5(f"{file.name}-{i}-{chunk[:50]}".encode()).hexdigest()
             ids.append(uid)
             docs.append(chunk)
             metas.append({"source": file.name, "chunk": i})
-
+            
     if not docs:
         return None, 0
-
-    embeddings = embed_texts(docs)
-
+        
     for i in range(0, len(docs), 100):
         collection.add(
             ids=ids[i:i + 100],
             documents=docs[i:i + 100],
-            embeddings=embeddings[i:i + 100],
             metadatas=metas[i:i + 100],
         )
-
     return collection, len(docs)
-
 
 def answer_question(collection, question, top_k=4):
     count = collection.count()
     if count == 0:
         return "知识库为空。", []
-
     n = min(top_k, count)
-    q_emb = embed_texts([question])[0]
-
-    res = collection.query(
-        query_embeddings=[q_emb],
-        n_results=n,
-    )
-
+    
+    # 直接使用文本查询，本地模型会自动处理向量化
+    res = collection.query(query_texts=[question], n_results=n)
     docs = res["documents"][0]
     metas = res["metadatas"][0]
-
+    
     context = "\n\n".join(
         f"[{i + 1}] 来源：{m['source']}，片段 {m['chunk']}\n{d}"
         for i, (d, m) in enumerate(zip(docs, metas))
     )
-
     messages = [
         {
             "role": "system",
@@ -144,17 +113,14 @@ def answer_question(collection, question, top_k=4):
             "content": f"资料：\n{context}\n\n问题：{question}",
         },
     ]
-
     resp = client.chat.completions.create(
         model=CHAT_MODEL,
         messages=messages,
         temperature=0.2,
     )
-
     answer = resp.choices[0].message.content
     sources = list(zip(docs, metas))
     return answer, sources
-
 
 st.title("📚 AI 文档问答助手")
 st.caption("上传 PDF/TXT/MD，构建知识库后提问。")
@@ -162,7 +128,6 @@ st.caption("上传 PDF/TXT/MD，构建知识库后提问。")
 with st.sidebar:
     st.header("设置")
     top_k = st.slider("检索片段数", 1, 10, 4)
-
     if st.button("清空对话"):
         st.session_state.messages = []
         st.rerun()
@@ -185,7 +150,6 @@ with col1:
     if st.button("构建/重建知识库", type="primary", disabled=not uploaded_files):
         with st.spinner("正在解析、切分、嵌入..."):
             collection, n_chunks = build_collection(uploaded_files)
-
             if collection:
                 st.session_state.collection = collection
                 st.session_state.messages = []
@@ -209,10 +173,8 @@ if question:
         st.warning("请先上传文档并构建知识库。")
     else:
         st.session_state.messages.append({"role": "user", "content": question})
-
         with st.chat_message("user"):
             st.markdown(question)
-
         with st.chat_message("assistant"):
             with st.spinner("思考中..."):
                 answer, sources = answer_question(
@@ -220,15 +182,12 @@ if question:
                     question,
                     top_k,
                 )
-
                 st.markdown(answer)
-
                 with st.expander("查看引用来源"):
                     for i, (doc, meta) in enumerate(sources, 1):
                         st.markdown(f"**[{i}] {meta['source']} / 片段 {meta['chunk']}**")
                         preview = doc[:1000] + ("..." if len(doc) > 1000 else "")
                         st.text(preview)
-
         st.session_state.messages.append(
             {"role": "assistant", "content": answer}
         )
