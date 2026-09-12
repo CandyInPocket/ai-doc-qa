@@ -127,108 +127,108 @@ def answer_question(collection, question, top_k=4):
 
     context = "\n\n".join(
         f"[{i + 1}] 来源：{m['source']}，片段 {m['chunk']}\n{d}"
-        为 i, (d, m) 在……内 enumerate(zip(docs, metas))
+        for i, (d, m) in enumerate(zip(docs, metas))
     )
 
-消息=[
+    messages = [
         {
             "role": "system",
-            "内容": (
+            "content": (
                 "你是一个严谨的知识库助手。只能根据用户提供的资料回答；"
                 "资料不足时明确说“资料中没有足够信息”。"
                 "回答要简洁，并在句末用 [1][2] 标注来源。"
             ),
         },
         {
-            "角色": "用户",
-            "内容": F"资料：\n{语境}\n\n问题：{问题}",
+            "role": "user",
+            "content": f"资料：\n{context}\n\n问题：{question}",
         },
     ]
 
-RESP=客户端。聊天.完井.创造(
-model=CHAT_MODEL，
-消息=消息，
-温度=0.2,
+    resp = client.chat.completions.create(
+        model=CHAT_MODEL,
+        messages=messages,
+        temperature=0.2,
     )
 
-答案=resp.选择[0].消息.内容
-来源=列表(拉链(文档，元))
-返回答案，来源
+    answer = resp.choices[0].message.content
+    sources = list(zip(docs, metas))
+    return answer, sources
 
 
-圣。标题(📚 人工智能"文档问答助手")
-圣。标题("上传PDF/TXT/MD，构建知识库后提问。")
+st.title("📚 AI 文档问答助手")
+st.caption("上传 PDF/TXT/MD，构建知识库后提问。")
 
-和……一起圣。侧边栏:
-圣。页眉("设置")
-top_k=st.滑块("搜索片段数"，1，10，4)
+with st.sidebar:
+    st.header("设置")
+    top_k = st.slider("检索片段数", 1, 10, 4)
 
-    如果圣。按钮("清空对话"):
-圣。会话状态(_state)。消息=[]
-圣。重新运行()
+    if st.button("清空对话"):
+        st.session_state.messages = []
+        st.rerun()
 
-如果"消息"不在……内圣。会话状态(状态(状态(_state)：
-圣。会话状态(_state)。消息=[]
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-如果"收藏"不在……内圣。会话状态(状态(状态(_state)：
-圣。会话状态(_state)。收集=没有一个
+if "collection" not in st.session_state:
+    st.session_state.collection = None
 
-uploaded_files=st.file_uploader(
+uploaded_files = st.file_uploader(
     "上传文档",
-类型=["pdf"，"txt"，"md"]，
-accept_multiple_files=正确，
+    type=["pdf", "txt", "md"],
+    accept_multiple_files=True,
 )
 
-col1，col2=st.列圣。会话状态(如果圣。按钮)。消息.追加({"角色"："用户"，"内容"：问题})会话状态。消息。附加({"角色"："用户"，"内容"：问题})
+col1, col2 = st.columns(2)
 
-和...一起col1：
-2(("构建/重建知识库"，类型="主要"，已禁用=不上传文件(_F)：
-accept_multiple_files=正确，
-集合，n_chunks=生成集合(_C)(上载的文件)
+with col1:
+    if st.button("构建/重建知识库", type="primary", disabled=not uploaded_files):
+        with st.spinner("正在解析、切分、嵌入..."):
+            collection, n_chunks = build_collection(uploaded_files)
 
-如果收集：
-圣。会话状态(_state)。收集=集合
-圣。会话状态(_state)。消息=[]
-圣。成功(f"知识库构建完成，共{n个区块(_C)}个片段。")
-：答案
-            
+            if collection:
+                st.session_state.collection = collection
+                st.session_state.messages = []
+                st.success(f"知识库构建完成，共 {n_chunks} 个片段。")
+            else:
+                st.warning("没有提取到有效文本。")
 
-带col2:col2：
-如果圣。按钮(正确)：如果st.按钮("清空知识别库")：
-圣。会话状态(_state)。集合=无会话_状态。收集=无
-圣。成功
+with col2:
+    if st.button("清空知识库"):
+        st.session_state.collection = None
+        st.success("已清空知识库。")
 
-消息
-使用st.聊天消息(_M)(消息["角色"])：带st.聊天消息(_M)(消息["角色"])：
-消息
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-问题=st.聊天输入(_I)("请输入问题")聊天输入(_I)("请输入问题")
+question = st.chat_input("请输入问题")
 
-圣。警告
-如果问题：问题：
-圣。警告("请先上传文档并构建知识库。")警告("请先上传文档并构建知识库。")
-)
-      
+if question:
+    if st.session_state.collection is None:
+        st.warning("请先上传文档并构建知识库。")
+    else:
+        st.session_state.messages.append({"role": "user", "content": question})
 
-带st.spinner("思考中...")：带st.spinner("思考中...")：
-使用st.chat_message("用户")：with st.chat_message("user")：
+        with st.chat_message("user"):
+            st.markdown(question)
 
-使用st.chat_message("assistant")：带st.chat_message("assistant")：
-)
-答案，来源=答案问题(回答问题(_Q)
-圣。会话状态(_state)。集合，会话状态(_state)。收集，
-问题，
-top_k，
+        with st.chat_message("assistant"):
+            with st.spinner("思考中..."):
+                answer, sources = answer_question(
+                    st.session_state.collection,
+                    question,
+                    top_k,
                 )
 
-st.markdown(回答)markdown(回答)
+                st.markdown(answer)
 
-带St.Expander("查看引用来源")：带St.Expander("查看引用来源")：
-对于枚举(源，1)中的i，(doc，meta)：for i，(doc，meta)in enumerate(sources，1)：
-圣。markdown(f"**[{i}]{meta['source']}/片段{meta['chunk']}**")markdown(f"**[{i}]{meta['source']}/片段{meta['chunk']}**")
-预览=doc[：1000]+(如果Len(doc)>1000else""，则"...")[：1000]+(如果Len(doc)>1000else""，则"...")
-                        st.text(preview)text(preview)
+                with st.expander("查看引用来源"):
+                    for i, (doc, meta) in enumerate(sources, 1):
+                        st.markdown(f"**[{i}] {meta['source']} / 片段 {meta['chunk']}**")
+                        preview = doc[:1000] + ("..." if len(doc) > 1000 else "")
+                        st.text(preview)
 
-)      
-{“角色”：“助手”，“内容”：答案}{"角色": "助理", "内容"：答案}
-      )
+        st.session_state.messages.append(
+            {"role": "assistant", "content": answer}
+        )
